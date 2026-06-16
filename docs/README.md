@@ -22,18 +22,53 @@ Fork 自:    https://github.com/siderolabs/talos
 go module:  github.com/siderolabs/talos (故意保持，避免 merge 冲突)
 ```
 
+## 版本策略
+
+**只追踪上游稳定版本**，不跟 alpha/beta/rc。
+
+| 上游版本 | YanOS 版本 | 说明 |
+|----------|------------|------|
+| `v1.13.4` | `v1.13.4-yanos.1` | 基于上游稳定版 + YanOS 补丁 |
+| `v1.14.0` (将来) | `v1.14.0-yanos.1` | 上游发稳定版后再跟进 |
+
 ## 分支
 
 | 分支 | 用途 |
 |------|------|
-| `main` | 品牌改动 + 上游同步 |
+| `main` | 品牌改动 + 上游稳定版同步 |
+| `release/v1.13` | 基于 v1.13.x 稳定分支（发布用） |
 | `profile/kubevirt` | KubeVirt 虚拟化优化 |
 | `profile/*` | 未来其他场景 |
 
 ## 上游同步
 
 ```bash
+# 切到上游稳定 tag 开始工作
 git fetch upstream
-git checkout main && git merge upstream/main
-git checkout profile/kubevirt && git merge main
+git checkout -b release/v1.13 v1.13.4
+git merge main   # 合入品牌改动
+
+# 上游发新 patch 时
+git checkout release/v1.13
+git merge v1.13.5  # 合入上游修复
 ```
+
+## 构建与发布
+
+```bash
+# 本地构建 yanctl
+make -f yanos.mk yanctl
+
+# GitHub Actions 自动发布（推 tag 触发）
+git tag v1.13.4-yanos.1
+git push origin v1.13.4-yanos.1
+# → GitHub Actions 构建 yanctl 多平台二进制 → Draft Release
+```
+
+## ISO / 系统镜像
+
+YanOS 当前不独立构建 ISO。使用上游 Talos Image Factory：
+- Web UI: https://factory.talos.dev
+- 或 `docker run ghcr.io/siderolabs/imager:v1.13.4 iso`
+
+后续自建 Image Factory 时再添加独立 ISO 产出。
