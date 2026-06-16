@@ -204,7 +204,7 @@ const (
 
 	// ISOFilesystemLabel is the label of the ISO file system for the Talos
 	// installer.
-	ISOFilesystemLabel = "TALOS"
+	ISOFilesystemLabel = "YANOS"
 
 	// KubernetesDefaultCertificateValidityDuration specifies default certificate duration for Kubernetes generated certificates.
 	KubernetesDefaultCertificateValidityDuration = time.Hour * 24 * 365
@@ -265,7 +265,7 @@ const (
 	KubernetesAdminCertCommonName = "admin"
 
 	// KubernetesTalosAdminCertCommonName defines CN property of Kubernetes admin certificate used by Talos itself.
-	KubernetesTalosAdminCertCommonName = "talos:admin"
+	KubernetesTalosAdminCertCommonName = "yanos:admin"
 
 	// KubernetesAdminCertOrganization defines Organization values of Kubernetes admin certificate.
 	KubernetesAdminCertOrganization = "system:masters"
@@ -1125,31 +1125,31 @@ const (
 	GoVersion = "go1.26.4"
 
 	// KubernetesTalosAPIServiceName is the name of the Kubernetes service to access Talos API.
-	KubernetesTalosAPIServiceName = "talos"
+	KubernetesTalosAPIServiceName = "yanos"
 
 	// KubernetesTalosAPIServiceNamespace is the namespace of the Kubernetes service to access Talos API.
 	KubernetesTalosAPIServiceNamespace = "default"
 
 	// TalosDir is the default name of the Talos directory under user home.
-	TalosDir = ".talos"
+	TalosDir = ".yanos"
 
 	// TalosconfigFilename is the file name of Talosconfig under TalosDir or under ServiceAccountMountPath inside a pod.
 	TalosconfigFilename = "config"
 
 	// KubernetesTalosProvider is the name of the Talos provider as a Kubernetes label.
-	KubernetesTalosProvider = "talos.dev"
+	KubernetesTalosProvider = "yanos.dev"
 
 	// KubernetesInventoryNamespace is the namespace where Talos inventory objects are stored.
 	KubernetesInventoryNamespace = "kube-system"
 
 	// KubernetesBootstrapManifestsInventoryName is the name of the Talos bootstrap manifests inventory object.
-	KubernetesBootstrapManifestsInventoryName = "talos-bootstrap-manifests-inventory"
+	KubernetesBootstrapManifestsInventoryName = "yanos-bootstrap-manifests-inventory"
 
 	// KubernetesFieldManagerName is the field manager name used by Talos when applying manifests.
-	KubernetesFieldManagerName = "talos"
+	KubernetesFieldManagerName = "yanos"
 
 	// ServiceAccountResourceGroup is the group name of the Talos service account CRD.
-	ServiceAccountResourceGroup = "talos.dev"
+	ServiceAccountResourceGroup = "yanos.dev"
 
 	// ServiceAccountResourceVersion is the version of the Talos service account CRD.
 	ServiceAccountResourceVersion = "v1alpha1"
@@ -1250,7 +1250,7 @@ const (
 	TalosAPIDefaultCertificateValidityDuration = time.Hour * 24 * 365
 
 	// DefaultNfTablesTableName is the default name of the nftables table created by Talos.
-	DefaultNfTablesTableName = "talos"
+	DefaultNfTablesTableName = "yanos"
 
 	// SystemResolvedPath is the path to the resolved dir.
 	SystemResolvedPath = SystemPath + "/resolved"
@@ -1425,10 +1425,10 @@ const OSReleaseTemplate = `NAME="%[1]s"
 ID=%[2]s
 VERSION_ID=%[3]s
 PRETTY_NAME="%[1]s (%[3]s)"
-HOME_URL="https://www.talos.dev/"
-BUG_REPORT_URL="https://github.com/siderolabs/talos/issues"
-VENDOR_NAME="Sidero Labs"
-VENDOR_URL="https://www.siderolabs.com/"
+HOME_URL="https://github.com/erhuoyan/yanos"
+BUG_REPORT_URL="https://github.com/erhuoyan/yanos/issues"
+VENDOR_NAME="erhuoyan"
+VENDOR_URL="https://github.com/erhuoyan"
 `
 
 // Installer/imager exit codes.
