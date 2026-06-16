@@ -1,0 +1,55 @@
+# 定期检查上游 Talos 新稳定版，提醒同步 imager
+name: yanos-upstream-check
+on:
+  schedule:
+    - cron: "0 8 * * 1"  # 每周一 UTC 08:00
+  workflow_dispatch: {}
+
+jobs:
+  check:
+    name: Check upstream releases
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Get latest stable Talos release
+        id: upstream
+        run: |
+          # 获取最新非 prerelease tag
+          LATEST=$(curl -sS "https://api.github.com/repos/siderolabs/talos/releases" | \
+            python3 -c '
+          import sys, json
+          releases = json.load(sys.stdin)
+          for r in releases:
+              if not r["prerelease"] and not r["draft"]:
+                  print(r["tag_name"])
+                  break
+          ')
+          echo "latest=${LATEST}" >> "$GITHUB_OUTPUT"
+          echo "Latest upstream stable: ${LATEST}"
+
+      - name: Check if imager is synced
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          LATEST: ${{ steps.upstream.outputs.latest }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${VPS_HOST} >> ~/.ssh/known_hosts 2>/dev/null
+
+          SYNCED=$(ssh root@${VPS_HOST} \
+            "skopeo inspect docker://hub-vpc.jdcloud.com/iaas-jf/siderolabs/imager:${LATEST} >/dev/null 2>&1 && echo yes || echo no")
+
+          if [ "$SYNCED" = "no" ]; then
+            echo "::warning::上游新版本 ${LATEST} 未同步! 请运行: ./hack/yanos/sync-imager.sh ${LATEST}"
+          else
+            echo "✓ imager:${LATEST} 已同步"
+          fi
+
+      - name: Create issue if not synced
+        if: ${{ steps.upstream.outputs.latest != '' }}
+        env:
+          LATEST: ${{ steps.upstream.outputs.latest }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # 只在未同步时创建 issue（简化：每次检查都提示）
+          echo "检查完成，最新上游版本: ${LATEST}"
