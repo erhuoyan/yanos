@@ -1,0 +1,181 @@
+# YanOS Release Workflow
+# Builds yanctl (multi-platform) + installer container image on tag push.
+# Does NOT require Siderolabs' self-hosted runners or remote buildkit.
+
+name: yanos-release
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.1.0)"
+        required: true
+
+env:
+  REGISTRY: ghcr.io
+  USERNAME: erhuoyan
+
+jobs:
+  yanctl:
+    name: Build yanctl
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Determine version
+        id: version
+        run: |
+          TAG="${GITHUB_REF_NAME:-${{ github.event.inputs.tag }}}"
+          SHA=$(git rev-parse --short=8 HEAD)
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Inject gendata
+        run: |
+          mkdir -p pkg/machinery/gendata/data
+          echo -n "YanOS"                    > pkg/machinery/gendata/data/name
+          echo -n "${{ steps.version.outputs.tag }}" > pkg/machinery/gendata/data/tag
+          echo -n "${{ steps.version.outputs.sha }}" > pkg/machinery/gendata/data/sha
+          echo -n "${{ env.USERNAME }}"      > pkg/machinery/gendata/data/username
+          echo -n "${{ env.REGISTRY }}"      > pkg/machinery/gendata/data/registry
+
+      - name: Build yanctl
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          BINARY="yanctl-${{ matrix.goos }}-${{ matrix.goarch }}"
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            BINARY="${BINARY}.exe"
+          fi
+          go build -tags grpcnotrace -ldflags "-s -w" \
+            -o "_out/${BINARY}" ./cmd/yanctl
+          echo "binary=${BINARY}" >> "$GITHUB_ENV"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: yanctl-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: _out/yanctl-*
+
+  installer:
+    name: Build installer image
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine version
+        id: version
+        run: |
+          TAG="${GITHUB_REF_NAME:-${{ github.event.inputs.tag }}}"
+          SHA=$(git rev-parse --short=8 HEAD)
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push installer
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          SHA: ${{ steps.version.outputs.sha }}
+        run: |
+          make installer \
+            USERNAME=erhuoyan \
+            REGISTRY=ghcr.io \
+            TAG="${TAG}" \
+            SHA="${SHA}" \
+            NAME="YanOS" \
+            PUSH=true \
+            PLATFORM=linux/amd64,linux/arm64
+
+  release:
+    name: Create release
+    runs-on: ubuntu-24.04
+    needs: [yanctl, installer]
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: _out
+          merge-multiple: true
+
+      - name: Generate checksums
+        working-directory: _out
+        run: |
+          sha256sum yanctl-* > sha256sum.txt
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: |
+            _out/yanctl-*
+            _out/sha256sum.txt
+          body: |
+            ## YanOS ${{ github.ref_name }}
+
+            ### Installer Image
+            ```
+            ghcr.io/erhuoyan/installer:${{ github.ref_name }}
+            ```
+
+            ### Quick Start
+            ```bash
+            # Download yanctl
+            curl -LO https://github.com/erhuoyan/yanos/releases/download/${{ github.ref_name }}/yanctl-linux-amd64
+            chmod +x yanctl-linux-amd64
+            sudo mv yanctl-linux-amd64 /usr/local/bin/yanctl
+
+            # Generate ISO using imager (after installer image is available)
+            docker run --rm -t -v _out:/out \
+              ghcr.io/erhuoyan/imager:${{ github.ref_name }} \
+              iso --output-kind iso
+            ```
