@@ -1,9 +1,9 @@
 # YanOS Release Workflow
-# Builds yanctl (multi-platform) on tag push. Creates a draft GitHub Release.
-# Does NOT require Siderolabs' self-hosted runners or remote buildkit.
+# 1. GitHub runner: 构建 yanctl 多平台二进制 → GitHub Release
+# 2. Self-hosted VPS (SSH): 生成 ISO → 上传对象存储
 #
-# Strategy: track upstream stable releases (e.g. v1.13.x).
-# YanOS tags follow: v<upstream>-yanos.<patch>, e.g. v1.13.4-yanos.1
+# 触发: push v* tag 或手动 workflow_dispatch
+# Tag 规范: v<upstream>-yanos.<patch>, e.g. v1.13.4-yanos.1
 
 name: yanos-release
 on:
@@ -21,6 +21,7 @@ env:
   USERNAME: erhuoyan
 
 jobs:
+  # ─── Job 1: 构建 yanctl (GitHub 免费 runner) ────────────────────────
   yanctl:
     name: Build yanctl (${{ matrix.goos }}/${{ matrix.goarch }})
     runs-on: ubuntu-24.04
@@ -83,17 +84,97 @@ jobs:
           name: yanctl-${{ matrix.goos }}-${{ matrix.goarch }}
           path: _out/yanctl-*
 
+  # ─── Job 2: 生成 ISO (SSH 到 VPS) ──────────────────────────────────
+  iso:
+    name: Build ISO (VPS)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Determine version
+        id: version
+        run: |
+          TAG="${GITHUB_REF_NAME:-${{ github.event.inputs.tag }}}"
+          UPSTREAM="${TAG%%-yanos*}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "upstream=${UPSTREAM}" >> "$GITHUB_OUTPUT"
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Build ISO on VPS
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          TAG: ${{ steps.version.outputs.tag }}
+          UPSTREAM: ${{ steps.version.outputs.upstream }}
+        run: |
+          ssh root@${VPS_HOST} bash << REMOTE
+          set -euo pipefail
+          export PATH=/usr/local/go/bin:/usr/local/bin:\$PATH
+
+          cd /root/yanos
+          git fetch --tags
+          git checkout main
+          git pull
+
+          # Inject gendata
+          mkdir -p pkg/machinery/gendata/data
+          echo -n "YanOS"    > pkg/machinery/gendata/data/name
+          echo -n "${TAG}"   > pkg/machinery/gendata/data/tag
+          echo -n "\$(git rev-parse --short=8 HEAD)" > pkg/machinery/gendata/data/sha
+          echo -n "erhuoyan" > pkg/machinery/gendata/data/username
+          echo -n "hub-vpc.jdcloud.com" > pkg/machinery/gendata/data/registry
+
+          # Build yanctl for VPS (linux/amd64)
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -tags grpcnotrace -ldflags "-s -w" \
+            -o _out/yanctl-linux-amd64 ./cmd/yanctl
+
+          # Generate ISO
+          IMAGER_IMAGE="hub-vpc.jdcloud.com/iaas-jf/siderolabs/imager:${UPSTREAM}"
+          docker pull "\${IMAGER_IMAGE}"
+          docker run --rm -t -v /root/yanos/_out:/out "\${IMAGER_IMAGE}" \
+            metal --arch amd64 --output-kind iso
+
+          # Rename with tag
+          mv _out/metal-amd64.iso "_out/yanos-${TAG}-amd64.iso"
+
+          # Checksums
+          cd _out
+          sha256sum "yanos-${TAG}-amd64.iso" yanctl-linux-amd64 > "sha256sum-${TAG}.txt"
+
+          # Upload to object storage
+          mc cp "yanos-${TAG}-amd64.iso"   yxh-oss/gengyan15/yanos/releases/${TAG}/
+          mc cp yanctl-linux-amd64         yxh-oss/gengyan15/yanos/releases/${TAG}/
+          mc cp "sha256sum-${TAG}.txt"     yxh-oss/gengyan15/yanos/releases/${TAG}/
+
+          echo "=== Upload complete ==="
+          mc ls yxh-oss/gengyan15/yanos/releases/${TAG}/
+          REMOTE
+
+      - name: Get ISO download URL
+        id: iso_url
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          # 获取对象存储的外部下载地址（如有公开读权限）
+          echo "oss_path=yxh-oss/gengyan15/yanos/releases/${TAG}/" >> "$GITHUB_OUTPUT"
+
+  # ─── Job 3: 创建 GitHub Release ────────────────────────────────────
   release:
     name: Create release
     runs-on: ubuntu-24.04
-    needs: [yanctl]
+    needs: [yanctl, iso]
     permissions:
       contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download all artifacts
+      - name: Download yanctl artifacts
         uses: actions/download-artifact@v4
         with:
           path: _out
@@ -101,8 +182,15 @@ jobs:
 
       - name: Generate checksums
         working-directory: _out
+        run: sha256sum yanctl-* > sha256sum.txt
+
+      - name: Determine version
+        id: version
         run: |
-          sha256sum yanctl-* > sha256sum.txt
+          TAG="${GITHUB_REF_NAME:-${{ github.event.inputs.tag }}}"
+          UPSTREAM="${TAG%%-yanos*}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "upstream=${UPSTREAM}" >> "$GITHUB_OUTPUT"
 
       - name: Create release
         uses: softprops/action-gh-release@v2
@@ -113,33 +201,28 @@ jobs:
             _out/yanctl-*
             _out/sha256sum.txt
           body: |
-            ## YanOS ${{ github.ref_name }}
+            ## YanOS ${{ steps.version.outputs.tag }}
 
-            基于上游 Talos Linux 稳定版本构建。
+            基于上游 Talos Linux `${{ steps.version.outputs.upstream }}` 稳定版本。
 
-            ### 安装
+            ### yanctl 安装
 
             ```bash
             # Linux amd64
-            curl -LO https://github.com/erhuoyan/yanos/releases/download/${{ github.ref_name }}/yanctl-linux-amd64
+            curl -LO https://github.com/erhuoyan/yanos/releases/download/${{ steps.version.outputs.tag }}/yanctl-linux-amd64
             chmod +x yanctl-linux-amd64
             sudo mv yanctl-linux-amd64 /usr/local/bin/yanctl
 
             # macOS Apple Silicon
-            curl -LO https://github.com/erhuoyan/yanos/releases/download/${{ github.ref_name }}/yanctl-darwin-arm64
+            curl -LO https://github.com/erhuoyan/yanos/releases/download/${{ steps.version.outputs.tag }}/yanctl-darwin-arm64
             chmod +x yanctl-darwin-arm64
             sudo mv yanctl-darwin-arm64 /usr/local/bin/yanctl
             ```
 
-            ### 生成系统镜像 (ISO)
+            ### ISO 下载
 
-            使用上游 Talos Image Factory 或自建：
-            ```bash
-            # 方式1: 使用上游 imager 镜像生成 ISO
-            docker run --rm -t -v $(pwd)/_out:/out \
-              ghcr.io/siderolabs/imager:v1.13.4 \
-              iso --output-kind iso
-
-            # 方式2: 使用 Talos Image Factory Web UI
-            # https://factory.talos.dev
+            ISO 存放在对象存储:
+            ```
+            路径: yxh-oss/gengyan15/yanos/releases/${{ steps.version.outputs.tag }}/
+            文件: yanos-${{ steps.version.outputs.tag }}-amd64.iso
             ```
