@@ -1,6 +1,7 @@
 # YanOS Release Workflow
 # 1. GitHub runner: 构建 yanctl 多平台二进制 → GitHub Release
 # 2. Self-hosted VPS (SSH): 生成 ISO → 上传对象存储
+# 3. 通知构建结果
 #
 # 触发: push v* tag 或手动 workflow_dispatch
 # Tag 规范: v<upstream>-yanos.<patch>, e.g. v1.13.4-yanos.1
@@ -157,15 +158,6 @@ jobs:
           mc ls yxh-oss/gengyan15/yanos/releases/${TAG}/
           REMOTE
 
-      - name: Get ISO download URL
-        id: iso_url
-        env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          TAG: ${{ steps.version.outputs.tag }}
-        run: |
-          # 获取对象存储的外部下载地址（如有公开读权限）
-          echo "oss_path=yxh-oss/gengyan15/yanos/releases/${TAG}/" >> "$GITHUB_OUTPUT"
-
   # ─── Job 3: 创建 GitHub Release ────────────────────────────────────
   release:
     name: Create release
@@ -227,5 +219,92 @@ jobs:
             ISO 存放在对象存储:
             ```
             路径: yxh-oss/gengyan15/yanos/releases/${{ steps.version.outputs.tag }}/
-            文件: yanos-${{ steps.version.outputs.tag }}-amd64.iso
+            文件: yanos-${{ steps.version.outputs.tag }}-amd64.iso.zst
             ```
+
+  # ─── Job 4: 通知构建结果 ────────────────────────────────────────────
+  notify:
+    name: Notify build result
+    runs-on: ubuntu-24.04
+    needs: [yanctl, iso, release]
+    if: always()
+    steps:
+      - name: Determine version
+        id: version
+        run: |
+          TAG="${GITHUB_REF_NAME:-${{ github.event.inputs.tag }}}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Build result summary
+        id: summary
+        run: |
+          YANCTL_RESULT="${{ needs.yanctl.result }}"
+          ISO_RESULT="${{ needs.iso.result }}"
+          RELEASE_RESULT="${{ needs.release.result }}"
+
+          if [ "$YANCTL_RESULT" = "success" ] && [ "$ISO_RESULT" = "success" ] && [ "$RELEASE_RESULT" = "success" ]; then
+            STATUS="✅ 全部成功"
+            COLOR="00ff00"
+          else
+            STATUS="❌ 部分失败"
+            COLOR="ff0000"
+          fi
+
+          echo "status=${STATUS}" >> "$GITHUB_OUTPUT"
+          echo "color=${COLOR}" >> "$GITHUB_OUTPUT"
+          echo "yanctl=${YANCTL_RESULT}" >> "$GITHUB_OUTPUT"
+          echo "iso=${ISO_RESULT}" >> "$GITHUB_OUTPUT"
+          echo "release=${RELEASE_RESULT}" >> "$GITHUB_OUTPUT"
+
+      - name: Send webhook notification
+        if: ${{ secrets.NOTIFY_WEBHOOK != '' }}
+        env:
+          WEBHOOK_URL: ${{ secrets.NOTIFY_WEBHOOK }}
+          TAG: ${{ steps.version.outputs.tag }}
+          STATUS: ${{ steps.summary.outputs.status }}
+          YANCTL: ${{ steps.summary.outputs.yanctl }}
+          ISO: ${{ steps.summary.outputs.iso }}
+          RELEASE: ${{ steps.summary.outputs.release }}
+        run: |
+          # 通用 webhook（适用于飞书/钉钉/企业微信/Slack）
+          # 飞书格式
+          curl -sSL -X POST "${WEBHOOK_URL}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "msg_type": "interactive",
+              "card": {
+                "header": {
+                  "title": {"tag": "plain_text", "content": "YanOS Release '"${TAG}"'"},
+                  "template": "'"$([ "${STATUS}" = "✅ 全部成功" ] && echo "green" || echo "red")"'"
+                },
+                "elements": [
+                  {
+                    "tag": "div",
+                    "text": {"tag": "lark_md", "content": "**状态**: '"${STATUS}"'\n**yanctl**: '"${YANCTL}"'\n**ISO**: '"${ISO}"'\n**Release**: '"${RELEASE}"'\n\n[查看详情]('"${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"')"}
+                  }
+                ]
+              }
+            }'
+
+      - name: Send email notification (fallback)
+        if: ${{ secrets.NOTIFY_WEBHOOK == '' }}
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.163.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: "YanOS Release ${{ steps.version.outputs.tag }} - ${{ steps.summary.outputs.status }}"
+          to: gengyan15@163.com
+          from: YanOS CI <${{ secrets.MAIL_USERNAME }}>
+          body: |
+            YanOS Release ${{ steps.version.outputs.tag }}
+
+            状态: ${{ steps.summary.outputs.status }}
+
+            - yanctl: ${{ steps.summary.outputs.yanctl }}
+            - ISO: ${{ steps.summary.outputs.iso }}
+            - Release: ${{ steps.summary.outputs.release }}
+
+            详情: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

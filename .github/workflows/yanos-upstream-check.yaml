@@ -105,3 +105,65 @@ jobs:
           git push origin ${LATEST}-yanos.1
           \`\`\`
           推送 tag 后 CI 自动构建 yanctl + ISO 并上传到对象存储。"
+
+      # ─── 通知同步结果 ─────────────────────────────────────────────────
+      - name: Notify - synced
+        if: steps.check.outputs.synced == 'no' && steps.sync.outputs.result == 'ok' && secrets.NOTIFY_WEBHOOK != ''
+        env:
+          WEBHOOK_URL: ${{ secrets.NOTIFY_WEBHOOK }}
+          LATEST: ${{ steps.upstream.outputs.latest }}
+        run: |
+          curl -sSL -X POST "${WEBHOOK_URL}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "msg_type": "interactive",
+              "card": {
+                "header": {
+                  "title": {"tag": "plain_text", "content": "上游 imager 已同步"},
+                  "template": "green"
+                },
+                "elements": [
+                  {
+                    "tag": "div",
+                    "text": {"tag": "lark_md", "content": "**版本**: '"${LATEST}"'\n**状态**: ✅ 同步成功\n\n可发布新版本:\n```\ngit tag '"${LATEST}"'-yanos.1\ngit push origin '"${LATEST}"'-yanos.1\n```"}
+                  }
+                ]
+              }
+            }'
+
+      - name: Notify - already synced
+        if: steps.check.outputs.synced == 'yes' && secrets.NOTIFY_WEBHOOK != ''
+        env:
+          WEBHOOK_URL: ${{ secrets.NOTIFY_WEBHOOK }}
+          LATEST: ${{ steps.upstream.outputs.latest }}
+        run: |
+          curl -sSL -X POST "${WEBHOOK_URL}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "msg_type": "text",
+              "content": {"text": "上游检查: imager '"${LATEST}"' 已是最新，无需同步"}
+            }'
+
+      - name: Notify - sync failed
+        if: failure() && secrets.NOTIFY_WEBHOOK != ''
+        env:
+          WEBHOOK_URL: ${{ secrets.NOTIFY_WEBHOOK }}
+          LATEST: ${{ steps.upstream.outputs.latest }}
+        run: |
+          curl -sSL -X POST "${WEBHOOK_URL}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "msg_type": "interactive",
+              "card": {
+                "header": {
+                  "title": {"tag": "plain_text", "content": "imager 同步失败"},
+                  "template": "red"
+                },
+                "elements": [
+                  {
+                    "tag": "div",
+                    "text": {"tag": "lark_md", "content": "**版本**: '"${LATEST}"'\n**状态**: ❌ 同步失败\n\n[查看日志]('"${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"')"}
+                  }
+                ]
+              }
+            }'
