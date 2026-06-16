@@ -116,7 +116,7 @@ jobs:
           export PATH=/usr/local/go/bin:/usr/local/bin:\$PATH
 
           cd /root/yanos
-          git fetch --all --tags
+          git fetch --all --tags --force
           git reset --hard origin/main
 
           # Inject gendata
