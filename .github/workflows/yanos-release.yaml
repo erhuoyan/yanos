@@ -257,54 +257,28 @@ jobs:
           echo "release=${RELEASE_RESULT}" >> "$GITHUB_OUTPUT"
 
       - name: Send webhook notification
-        if: ${{ secrets.NOTIFY_WEBHOOK != '' }}
         env:
-          WEBHOOK_URL: ${{ secrets.NOTIFY_WEBHOOK }}
           TAG: ${{ steps.version.outputs.tag }}
           STATUS: ${{ steps.summary.outputs.status }}
           YANCTL: ${{ steps.summary.outputs.yanctl }}
           ISO: ${{ steps.summary.outputs.iso }}
           RELEASE: ${{ steps.summary.outputs.release }}
         run: |
-          # 通用 webhook（适用于飞书/钉钉/企业微信/Slack）
-          # 飞书格式
-          curl -sSL -X POST "${WEBHOOK_URL}" \
+          curl -sSL -X POST \
+            "http://114.67.232.32:5001/webhook/event/github?access_token=${{ secrets.NOTIFY_TOKEN }}&cluster=erhuoyan" \
             -H "Content-Type: application/json" \
-            -d '{
-              "msg_type": "interactive",
-              "card": {
-                "header": {
-                  "title": {"tag": "plain_text", "content": "YanOS Release '"${TAG}"'"},
-                  "template": "'"$([ "${STATUS}" = "✅ 全部成功" ] && echo "green" || echo "red")"'"
-                },
-                "elements": [
-                  {
-                    "tag": "div",
-                    "text": {"tag": "lark_md", "content": "**状态**: '"${STATUS}"'\n**yanctl**: '"${YANCTL}"'\n**ISO**: '"${ISO}"'\n**Release**: '"${RELEASE}"'\n\n[查看详情]('"${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"')"}
-                  }
-                ]
-              }
-            }'
-
-      - name: Send email notification (fallback)
-        if: ${{ secrets.NOTIFY_WEBHOOK == '' }}
-        uses: dawidd6/action-send-mail@v3
-        with:
-          server_address: smtp.163.com
-          server_port: 465
-          secure: true
-          username: ${{ secrets.MAIL_USERNAME }}
-          password: ${{ secrets.MAIL_PASSWORD }}
-          subject: "YanOS Release ${{ steps.version.outputs.tag }} - ${{ steps.summary.outputs.status }}"
-          to: gengyan15@163.com
-          from: YanOS CI <${{ secrets.MAIL_USERNAME }}>
-          body: |
-            YanOS Release ${{ steps.version.outputs.tag }}
-
-            状态: ${{ steps.summary.outputs.status }}
-
-            - yanctl: ${{ steps.summary.outputs.yanctl }}
-            - ISO: ${{ steps.summary.outputs.iso }}
-            - Release: ${{ steps.summary.outputs.release }}
-
-            详情: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            -d "$(cat <<EOF
+          {
+            "event": "release",
+            "tag": "${TAG}",
+            "status": "${STATUS}",
+            "detail": {
+              "yanctl": "${YANCTL}",
+              "iso": "${ISO}",
+              "release": "${RELEASE}"
+            },
+            "url": "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}",
+            "text": "YanOS Release ${TAG} ${STATUS}\nyanctl: ${YANCTL} | ISO: ${ISO} | Release: ${RELEASE}"
+          }
+          EOF
+          )"
