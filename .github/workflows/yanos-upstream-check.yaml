@@ -1,21 +1,38 @@
-# 定期检查上游 Talos 新稳定版，提醒同步 imager
-name: yanos-upstream-check
+# 定期检查上游 Talos 新稳定版，自动同步 imager 到内网 registry
+# GitHub runner 直连 ghcr.io（无需加速），推送到公网地址 hub-pub.jdcloud.com
+name: yanos-upstream-sync
 on:
   schedule:
-    - cron: "0 8 * * 1"  # 每周一 UTC 08:00
-  workflow_dispatch: {}
+    - cron: "0 8 * * 1,4"  # 每周一、四 UTC 08:00
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "手动指定版本 (留空自动检测最新稳定版)"
+        required: false
 
 jobs:
-  check:
-    name: Check upstream releases
+  sync:
+    name: Sync upstream imager
     runs-on: ubuntu-24.04
+    permissions:
+      issues: write
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install skopeo
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq skopeo
+
       - name: Get latest stable Talos release
         id: upstream
         run: |
-          # 获取最新非 prerelease tag
-          LATEST=$(curl -sS "https://api.github.com/repos/siderolabs/talos/releases" | \
-            python3 -c '
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            LATEST="${{ github.event.inputs.version }}"
+          else
+            LATEST=$(curl -sS "https://api.github.com/repos/siderolabs/talos/releases" | \
+              python3 -c '
           import sys, json
           releases = json.load(sys.stdin)
           for r in releases:
@@ -23,33 +40,68 @@ jobs:
                   print(r["tag_name"])
                   break
           ')
+          fi
           echo "latest=${LATEST}" >> "$GITHUB_OUTPUT"
           echo "Latest upstream stable: ${LATEST}"
 
-      - name: Check if imager is synced
+      - name: Login to internal registry
+        run: |
+          skopeo login hub-pub.jdcloud.com \
+            --username "${{ secrets.JD_REGISTRY_USER }}" \
+            --password "${{ secrets.JD_REGISTRY_PASS }}"
+
+      - name: Check if already synced
+        id: check
         env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
           LATEST: ${{ steps.upstream.outputs.latest }}
         run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H ${VPS_HOST} >> ~/.ssh/known_hosts 2>/dev/null
-
-          SYNCED=$(ssh root@${VPS_HOST} \
-            "skopeo inspect docker://hub-vpc.jdcloud.com/iaas-jf/siderolabs/imager:${LATEST} >/dev/null 2>&1 && echo yes || echo no")
-
-          if [ "$SYNCED" = "no" ]; then
-            echo "::warning::上游新版本 ${LATEST} 未同步! 请运行: ./hack/yanos/sync-imager.sh ${LATEST}"
+          if skopeo inspect "docker://hub-pub.jdcloud.com/iaas-jf/siderolabs/imager:${LATEST}" >/dev/null 2>&1; then
+            echo "synced=yes" >> "$GITHUB_OUTPUT"
+            echo "✓ imager:${LATEST} 已存在，跳过"
           else
-            echo "✓ imager:${LATEST} 已同步"
+            echo "synced=no" >> "$GITHUB_OUTPUT"
+            echo "✗ imager:${LATEST} 需要同步"
           fi
 
-      - name: Create issue if not synced
-        if: ${{ steps.upstream.outputs.latest != '' }}
+      - name: Sync imager
+        if: steps.check.outputs.synced == 'no'
+        id: sync
+        env:
+          LATEST: ${{ steps.upstream.outputs.latest }}
+        run: |
+          echo ">>> 同步 ghcr.io/siderolabs/imager:${LATEST} → hub-pub.jdcloud.com"
+
+          skopeo copy --override-arch amd64 --override-os linux \
+            "docker://ghcr.io/siderolabs/imager:${LATEST}" \
+            "docker://hub-pub.jdcloud.com/iaas-jf/siderolabs/imager:${LATEST}"
+
+          echo ">>> 验证..."
+          skopeo inspect "docker://hub-pub.jdcloud.com/iaas-jf/siderolabs/imager:${LATEST}" > /dev/null
+          echo "result=ok" >> "$GITHUB_OUTPUT"
+          echo "✓ 同步完成"
+
+      - name: Create issue - ready to release
+        if: steps.check.outputs.synced == 'no' && steps.sync.outputs.result == 'ok'
         env:
           LATEST: ${{ steps.upstream.outputs.latest }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          # 只在未同步时创建 issue（简化：每次检查都提示）
-          echo "检查完成，最新上游版本: ${LATEST}"
+          # 避免重复 issue
+          EXISTING=$(gh issue list --repo "${{ github.repository }}" \
+            --search "imager ${LATEST}" --state open --json number -q '.[0].number' 2>/dev/null || true)
+          if [ -n "$EXISTING" ]; then
+            echo "Issue #${EXISTING} already exists"
+            exit 0
+          fi
+
+          gh issue create --repo "${{ github.repository }}" \
+            --title "imager ${LATEST} 已同步，可发布 ${LATEST}-yanos.1" \
+            --label "release" \
+            --body "上游 Talos \`${LATEST}\` 的 imager 已自动同步到内网 registry。
+
+          **发布操作：**
+          \`\`\`bash
+          git tag ${LATEST}-yanos.1
+          git push origin ${LATEST}-yanos.1
+          \`\`\`
+          推送 tag 后 CI 自动构建 yanctl + ISO 并上传到对象存储。"

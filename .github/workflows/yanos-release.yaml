@@ -115,9 +115,8 @@ jobs:
           export PATH=/usr/local/go/bin:/usr/local/bin:\$PATH
 
           cd /root/yanos
-          git fetch --tags
-          git checkout main
-          git pull
+          git fetch --all --tags
+          git reset --hard origin/main
 
           # Inject gendata
           mkdir -p pkg/machinery/gendata/data
@@ -138,15 +137,19 @@ jobs:
           docker run --rm -t -v /root/yanos/_out:/out "\${IMAGER_IMAGE}" \
             metal --arch amd64 --output-kind iso
 
-          # Rename with tag
-          mv _out/metal-amd64.iso "_out/yanos-${TAG}-amd64.iso"
+          # Rename with tag (imager outputs .iso.zst)
+          if [ -f _out/metal-amd64.iso.zst ]; then
+            mv _out/metal-amd64.iso.zst "_out/yanos-${TAG}-amd64.iso.zst"
+          elif [ -f _out/metal-amd64.iso ]; then
+            mv _out/metal-amd64.iso "_out/yanos-${TAG}-amd64.iso"
+          fi
 
           # Checksums
           cd _out
-          sha256sum "yanos-${TAG}-amd64.iso" yanctl-linux-amd64 > "sha256sum-${TAG}.txt"
+          sha256sum yanos-${TAG}-amd64.iso* yanctl-linux-amd64 > "sha256sum-${TAG}.txt"
 
           # Upload to object storage
-          mc cp "yanos-${TAG}-amd64.iso"   yxh-oss/gengyan15/yanos/releases/${TAG}/
+          mc cp yanos-${TAG}-amd64.iso*    yxh-oss/gengyan15/yanos/releases/${TAG}/
           mc cp yanctl-linux-amd64         yxh-oss/gengyan15/yanos/releases/${TAG}/
           mc cp "sha256sum-${TAG}.txt"     yxh-oss/gengyan15/yanos/releases/${TAG}/
 
